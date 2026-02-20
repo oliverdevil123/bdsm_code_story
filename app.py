@@ -4,12 +4,12 @@ from flask_cors import CORS
 import boto3
 from werkzeug.utils import secure_filename
 import uuid
-from pymongo import MongoClient # ĐÃ THÊM: Thư viện MongoDB
+from pymongo import MongoClient
 
 app = Flask(__name__)
 CORS(app)
 
-# Lấy các thông số R2 (Giữ nguyên)
+# 1. Cấu hình R2
 R2_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL')
 R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
 R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
@@ -24,11 +24,18 @@ s3 = boto3.client(
     region_name='auto'
 )
 
-# === KẾT NỐI MONGODB ===
-MONGO_URI = os.environ.get('MONGO_URI') # Lấy link database từ biến môi trường
-client = MongoClient(MONGO_URI)
-db = client['truyen_database'] # Tên cơ sở dữ liệu
-stories_collection = db['stories'] # Tên bảng (collection) lưu truyện
+# 2. Kết nối MongoDB
+MONGO_URI = os.environ.get('MONGO_URI')
+try:
+    # Kết nối với timeout 5 giây
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client['truyen_database']
+    stories_collection = db['stories']
+    client.admin.command('ping')
+    print("✅ KẾT NỐI MONGODB THÀNH CÔNG!")
+except Exception as e:
+    print(f"❌ LỖI KẾT NỐI MONGODB: {e}")
+    stories_collection = None
 
 @app.route('/', methods=['GET'])
 def home():
@@ -37,6 +44,9 @@ def home():
 @app.route('/api/upload_comic', methods=['POST'])
 def upload_comic():
     try:
+        if stories_collection is None:
+            return jsonify({"error": "Database chưa kết nối thành công"}), 500
+
         title = request.form.get('title', 'Chưa có tên')
         author = request.form.get('author', 'Vô Danh')
         genre = request.form.get('genre', 'Khác')
@@ -72,10 +82,8 @@ def upload_comic():
             "imageUrls": page_urls
         }
         
-        # ---> LƯU VÀO MONGODB (Thay vì lưu vào biến RAM) <---
+        # Lưu vào MongoDB
         stories_collection.insert_one(new_story)
-
-        # Xóa ID hệ thống của MongoDB trước khi gửi về App để tránh lỗi
         new_story.pop('_id', None)
 
         return jsonify({"message": "Thành công", "story": new_story}), 200
@@ -84,10 +92,14 @@ def upload_comic():
 
 @app.route('/api/stories', methods=['GET'])
 def get_stories():
-    # ---> LẤY DANH SÁCH TỪ MONGODB <---
-    # {'_id': 0} giúp ẩn ID của DB đi. .sort('_id', -1) giúp truyện mới nhất luôn nổi lên đầu
-    stories = list(stories_collection.find({}, {'_id': 0}).sort('_id', -1))
-    return jsonify(stories), 200
+    try:
+        if stories_collection is None:
+            return jsonify([]), 200
+        # Lấy từ MongoDB, sắp xếp mới nhất lên đầu
+        stories = list(stories_collection.find({}, {'_id': 0}).sort('_id', -1))
+        return jsonify(stories), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
