@@ -5,11 +5,15 @@ import boto3
 from werkzeug.utils import secure_filename
 import uuid
 from pymongo import MongoClient
+import certifi
+
+# Khởi tạo chứng chỉ SSL cho MongoDB
+ca = certifi.where()
 
 app = Flask(__name__)
 CORS(app)
 
-# 1. Cấu hình R2
+# 1. Cấu hình R2 (Lấy từ Environment Variables trên Render)
 R2_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL')
 R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
 R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
@@ -27,10 +31,12 @@ s3 = boto3.client(
 # 2. Kết nối MongoDB
 MONGO_URI = os.environ.get('MONGO_URI')
 try:
-    # Kết nối với timeout 5 giây
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    # Sử dụng tlsCAFile=ca để sửa lỗi SSL handshake
+    client = MongoClient(MONGO_URI, tlsCAFile=ca, serverSelectionTimeoutMS=5000)
     db = client['truyen_database']
     stories_collection = db['stories']
+    
+    # Kiểm tra kết nối
     client.admin.command('ping')
     print("✅ KẾT NỐI MONGODB THÀNH CÔNG!")
 except Exception as e:
@@ -55,6 +61,7 @@ def upload_comic():
         
         folder_id = str(uuid.uuid4())[:8]
 
+        # Xử lý ảnh bìa
         cover_file = request.files.get('cover')
         cover_url = ""
         if cover_file:
@@ -63,6 +70,7 @@ def upload_comic():
             s3.upload_fileobj(cover_file, BUCKET_NAME, s3_path)
             cover_url = f"{PUBLIC_URL}/{s3_path}"
 
+        # Xử lý các trang truyện (nếu là comic)
         pages = request.files.getlist('pages')
         page_urls = []
         if story_type != 'text':
@@ -84,6 +92,8 @@ def upload_comic():
         
         # Lưu vào MongoDB
         stories_collection.insert_one(new_story)
+        
+        # Xóa ID của MongoDB trước khi gửi trả về app
         new_story.pop('_id', None)
 
         return jsonify({"message": "Thành công", "story": new_story}), 200
@@ -95,11 +105,13 @@ def get_stories():
     try:
         if stories_collection is None:
             return jsonify([]), 200
-        # Lấy từ MongoDB, sắp xếp mới nhất lên đầu
+        # Lấy danh sách, ẩn ID và sắp xếp mới nhất lên đầu
         stories = list(stories_collection.find({}, {'_id': 0}).sort('_id', -1))
         return jsonify(stories), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Render yêu cầu chạy ở port 10000 hoặc thông qua biến PORT
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
